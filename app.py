@@ -1083,6 +1083,9 @@ class InspecaoFrame(ttk.Frame):
         self.test_img_scale = 1.0    # Escala da imagem de teste no canvas
         self.test_img_path = None    # Caminho da imagem de teste
         self.model_path = None       # Caminho do modelo carregado
+        self.cap = None              # Captura da câmera
+        self.live_running = False
+        self.live_after_id = None
 
         # --- Frame Superior (Controles) ---
         control_frame = ttk.Frame(self)
@@ -1101,6 +1104,14 @@ class InspecaoFrame(ttk.Frame):
         ttk.Button(test_img_frame, text="Selecionar Imagem Teste", command=self.browse_load_test_image, bootstyle="secondary").pack(pady=2, padx=5, fill=X)
         self.test_img_label = ttk.Label(test_img_frame, text="Nenhuma imagem carregada.", anchor=NW, justify=LEFT, wraplength=200)
         self.test_img_label.pack(pady=2, padx=5, fill=X)
+
+        # Câmera ao Vivo
+        camera_frame = ttk.LabelFrame(control_frame, text=" Câmera ")
+        camera_frame.pack(side=LEFT, padx=5, fill=Y)
+        self.camera_combo = Combobox(camera_frame, values=self.detect_cameras(), state="readonly", width=5)
+        self.camera_combo.pack(pady=2, padx=5)
+        self.live_button = ttk.Button(camera_frame, text="Iniciar Ao Vivo", command=self.toggle_live, bootstyle="warning")
+        self.live_button.pack(pady=2, padx=5, fill=X)
 
         # Botão Iniciar Inspeção
         action_frame = ttk.LabelFrame(control_frame, text=" Ação ")
@@ -1267,11 +1278,68 @@ class InspecaoFrame(ttk.Frame):
         else:
             self.inspect_button.config(state=DISABLED)
 
+    def detect_cameras(self, max_cams=5):
+        """Retorna lista de índices de câmeras disponíveis."""
+        available = []
+        for i in range(max_cams):
+            cap = cv2.VideoCapture(i)
+            if cap is not None and cap.isOpened():
+                available.append(str(i))
+                cap.release()
+        if not available:
+            available.append("0")
+        return available
 
-    def run_inspection(self):
-        """Executa o processo de inspeção completo."""
+    def toggle_live(self):
+        """Inicia ou para a captura ao vivo."""
+        if not self.live_running:
+            if not self.model_data or self.img_ref_cv is None:
+                messagebox.showerror("Erro", "Carregue um modelo antes de iniciar o ao vivo.", parent=self)
+                return
+            cam_index = int(self.camera_combo.get() or 0)
+            self.cap = cv2.VideoCapture(cam_index)
+            if not self.cap.isOpened():
+                messagebox.showerror("Erro", f"Não foi possível abrir a câmera {cam_index}.", parent=self)
+                self.cap = None
+                return
+            self.live_running = True
+            self.live_button.config(text="Parar Ao Vivo")
+            self.process_live_frame()
+        else:
+            self.live_running = False
+            if self.cap:
+                self.cap.release()
+                self.cap = None
+            if self.live_after_id:
+                self.after_cancel(self.live_after_id)
+                self.live_after_id = None
+            self.live_button.config(text="Iniciar Ao Vivo")
+
+    def process_live_frame(self):
+        if not self.live_running or self.cap is None:
+            return
+        ret, frame = self.cap.read()
+        if not ret:
+            self._log("Falha ao capturar frame da câmera.")
+            self.live_after_id = self.after(5000, self.process_live_frame)
+            return
+        self.img_test_cv = frame
+        self.canvas.delete("all")
+        self.tk_test_img, self.test_img_scale = cv2_to_tk(frame, PREVIEW_W, PREVIEW_H)
+        if self.tk_test_img:
+            w = self.tk_test_img.width()
+            h = self.tk_test_img.height()
+            self.canvas.create_image(0, 0, anchor=NW, image=self.tk_test_img, tags="test_image")
+            self.canvas.config(scrollregion=(0, 0, w, h))
+        self.run_inspection(show_message=False)
+        self.live_after_id = self.after(5000, self.process_live_frame)
+
+
+    def run_inspection(self, show_message=True):
+        """Executa o processo de inspeção completo.\n        Se show_message=False, não exibe messagebox ao final."""
         if not self.model_data or self.img_ref_cv is None or self.img_test_cv is None:
-            messagebox.showerror("Erro", "Carregue o modelo de referência E a imagem de teste antes de inspecionar.", parent=self)
+            if show_message:
+                messagebox.showerror("Erro", "Carregue o modelo de referência E a imagem de teste antes de inspecionar.", parent=self)
             return
 
         self._log("--- Iniciando Inspeção ---")
@@ -1330,7 +1398,8 @@ class InspecaoFrame(ttk.Frame):
         # 4. Resultado Final
         final_status = "APROVADO" if overall_ok else "REPROVADO"
         self._log(f"--- Inspeção Concluída: {final_status} ---")
-        messagebox.showinfo("Resultado da Inspeção", f"A inspeção foi concluída.\nResultado Geral: {final_status}", parent=self)
+        if show_message:
+            messagebox.showinfo("Resultado da Inspeção", f"A inspeção foi concluída.\nResultado Geral: {final_status}", parent=self)
 
 
 # ---------- Aplicação Principal -----------------------------------------------
